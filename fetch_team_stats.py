@@ -284,7 +284,7 @@ def display_dashboard(cleaned_data):
             logo_path = f"logos/{team2.replace(' ', '_').lower()}.svg"
 
         # Display the winning team's logo
-        st.image(logo_path, use_column_width=True)
+        st.image(logo_path, use_container_width=True)  # Updated to use 'use_container_width' instead of 'use_column_width'
 
 if __name__ == "__main__":
     # Collect data from both sources
