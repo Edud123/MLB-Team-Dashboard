@@ -11,6 +11,8 @@ from sklearn.model_selection import cross_val_score
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.pipeline import Pipeline
 import streamlit as st
+import tensorflow as tf
+import joblib
 
 def scrape_baseball_reference():
     url = "https://www.baseball-reference.com/leagues/MLB/2025.shtml"
@@ -29,39 +31,27 @@ def scrape_baseball_reference():
 
         # Extract data from the table
         rows = team_stats_table.find_all('tr')
-        batting_data = []  # Initialize list to collect batting data
+        batting_data = {}  # Initialize dictionary to collect batting data
         for row in rows:
             cols = row.find_all('td')
             team_name_col = row.find('th')  # Team name is often in the <th> tag
             if cols and team_name_col:
                 team_name = team_name_col.text.strip()
-                obp = cols[10].text.strip() if len(cols) > 10 else "N/A"  # Example column for OBP
-                slg = cols[11].text.strip() if len(cols) > 11 else "N/A"  # Example column for SLG
+                obp = float(cols[17].text.strip()) if len(cols) > 17 else 0.0  # Column index for OBP
+                slg = float(cols[18].text.strip()) if len(cols) > 18 else 0.0  # Column index for SLG
 
                 # Collect refined data
-                batting_data.append({'name': team_name, 'obp': obp, 'slg': slg})
+                batting_data[team_name] = {'obp': obp, 'slg': slg}
 
-        # Example: Scrape pitching stats table for ERA and other metrics
-        pitching_stats_table = soup.find('table', {'id': 'teams_standard_pitching'})
-        if pitching_stats_table:
-            # Debugging: Print the entire HTML to check for pitching stats table
-            print(":) Debugging: Printing HTML to check for pitching stats table...")
-            print(soup.prettify())
+        # Print the original scraped batting data for debugging
+        print(":) Debug: Original Scraped Batting Data")
+        print(batting_data)
 
-            print(":) Found pitching stats table. Extracting ERA...")
-            rows = pitching_stats_table.find_all('tr')
-            for row in rows:
-                cols = row.find_all('td')
-                team_name_col = row.find('th')  # Team name is often in the <th> tag
-                if cols and team_name_col:
-                    team_name = team_name_col.text.strip()
-                    era = cols[8].text.strip() if len(cols) > 8 else "N/A"  # Example column for ERA
-                    print(f"Team: {team_name}, ERA: {era}")
+        return batting_data
 
     except requests.exceptions.RequestException as e:
         print(f"Error during scraping: {e}")
-    
-    return batting_data  # Return the collected batting data
+        return {}
 
 def scrape_mlb_standings():
     url = "https://www.mlb.com/standings/"
@@ -101,209 +91,198 @@ def scrape_mlb_standings():
     
     return standings_data  # Return the collected standings data
 
+# Load 2025 ERA data from 'Team ERA 2025.csv'
 def load_pitching_stats(file_path):
-    print(":) Loading pitching stats from CSV...")
+    print(":) Loading 2025 pitching stats from CSV...")
     pitching_data = {}
-    with open(file_path, mode='r') as file:
+
+    # Handle BOM in CSV headers
+    with open(file_path, mode='r', encoding='utf-8-sig') as file:
+        reader = csv.DictReader(file)
+        print("CSV Headers:", reader.fieldnames)  # Print the headers for debugging
+
+    # Reload the file to process rows
+    with open(file_path, mode='r', encoding='utf-8-sig') as file:
         reader = csv.DictReader(file)
         for row in reader:
-            team_name = row['Team']
-            era = row['ERA']
+            team_name = row['Team']  # Use full-length team names directly
+            era = float(row['ERA'])
             pitching_data[team_name] = {'era': era}
     return pitching_data
 
-def load_team_stats(file_path):
-    print(":) Loading team stats from CSV...")
-    team_data = {}
-    with open(file_path, mode='r') as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            team_name = row['Team']
-            war = row['WAR']
-            team_data[team_name] = {'war': war}
-    return team_data
+# Scale the ERA data in 'Team ERA 2025.csv'
+def scale_era_data(file_path):
+    print(":) Scaling ERA data...")
+    df = pd.read_csv(file_path)
+
+    # Initialize the scaler
+    scaler = MinMaxScaler()
+
+    # Scale the ERA column
+    df['ERA'] = scaler.fit_transform(df[['ERA']])
+
+    # Save the scaled data back to the CSV
+    df.to_csv(file_path, index=False)
+    print(":) Scaled ERA data saved to", file_path)
+
+# Scale the ERA data in 'Team Important Stats 2010-2025.csv'
+def scale_era_in_important_stats(file_path):
+    print(":) Scaling ERA data in Team Important Stats...")
+    df = pd.read_csv(file_path)
+
+    # Initialize the scaler
+    scaler = MinMaxScaler()
+
+    # Scale the ERA column
+    df['ERA'] = scaler.fit_transform(df[['ERA']])
+
+    # Save the scaled data back to the CSV
+    df.to_csv(file_path, index=False)
+    print(":) Scaled ERA data saved to", file_path)
 
 def normalize_team_name(name):
-    # Normalize team names to ensure consistency across datasets
-    return name.strip().lower().replace(" ", "_")
+    # Map full team names to their abbreviations
+    team_name_mapping = {
+        'Arizona Diamondbacks': 'ari',
+        'Athletics': 'ath',
+        'Atlanta Braves': 'atl',
+        'Baltimore Orioles': 'bal',
+        'Boston Red Sox': 'bos',
+        'Chicago Cubs': 'chc',
+        'Chicago White Sox': 'chw',
+        'Cincinnati Reds': 'cin',
+        'Cleveland Guardians': 'cle',
+        'Colorado Rockies': 'col',
+        'Detroit Tigers': 'det',
+        'Houston Astros': 'hou',
+        'Kansas City Royals': 'kcr',
+        'Los Angeles Angels': 'laa',
+        'Los Angeles Dodgers': 'lad',
+        'Miami Marlins': 'mia',
+        'Milwaukee Brewers': 'mil',
+        'Minnesota Twins': 'min',
+        'New York Mets': 'nym',
+        'New York Yankees': 'nyy',
+        'Philadelphia Phillies': 'phi',
+        'Pittsburgh Pirates': 'pit',
+        'San Diego Padres': 'sdp',
+        'Seattle Mariners': 'sea',
+        'San Francisco Giants': 'sfg',
+        'St. Louis Cardinals': 'stl',
+        'Tampa Bay Rays': 'tbr',
+        'Texas Rangers': 'tex',
+        'Toronto Blue Jays': 'tor',
+        'Washington Nationals': 'wsn'
+    }
+    return team_name_mapping.get(name.strip(), '').lower()
 
-def merge_tables(standings_data, batting_data, pitching_data, team_data):
-    print(":) Merging tables...")
+# Remove normalization for ERA data and use full-length team names consistently
+def predict_win_rates(obp_slg_data, era_data):
+    # Filter out 'League Average' and blank entries from OBP/SLG data
+    obp_slg_data = {team: stats for team, stats in obp_slg_data.items() if team != 'League Average' and team.strip() != ''}
 
-    # Normalize team names for quick lookup
-    standings_dict = {normalize_team_name(team['name']): team for team in standings_data}
-    batting_dict = {normalize_team_name(team['name']): team for team in batting_data}
-    pitching_dict = {normalize_team_name(team): data for team, data in pitching_data.items()}
-    team_dict = {normalize_team_name(team): data for team, data in team_data.items()}
+    # Remove scaling for OBP and SLG data
+    for team, stats in obp_slg_data.items():
+        stats['obp'] = stats['obp']  # Keep OBP as is
+        stats['slg'] = stats['slg']  # Keep SLG as is
 
-    # Merge data where normalized team names match
-    merged_data = []
-    for team_name in standings_dict:
-        if team_name in batting_dict and team_name in pitching_dict and team_name in team_dict:
-            # Calculate win rate
-            try:
-                wins = int(standings_dict[team_name]['wins'])
-                losses = int(standings_dict[team_name]['losses'])
-                win_rate = wins / (wins + losses) if (wins + losses) > 0 else 0
-            except ValueError:
-                win_rate = "N/A"
+    # Print all scraped data for debugging
+    print(":) Debug: Scraped OBP/SLG Data")
+    print(obp_slg_data)
 
-            # Ensure wins and losses are added as integers
-            merged_row = {
-                'name': team_name.replace("_", " ").title(),
-                'wins': int(standings_dict[team_name]['wins']),
-                'losses': int(standings_dict[team_name]['losses']),
-                'win_rate': win_rate,
-                'obp': float(batting_dict[team_name]['obp']),
-                'slg': float(batting_dict[team_name]['slg']),
-                'era': float(pitching_dict[team_name]['era']),
-                'war': float(team_dict[team_name]['war'])
-            }
-            merged_data.append(merged_row)
+    print(":) Debug: Scraped ERA Data")
+    print(era_data)
 
-    print(":) Merged data:", merged_data)
-    print(":) Debugging: Merged data keys:", merged_data[0].keys() if merged_data else "No data")
-    return merged_data
+    # Merge OBP, SLG, and ERA into a feature set
+    features = []
+    teams_with_data = []  # Track teams with complete data
 
-def clean_and_scale_data(merged_data):
-    print(":) Cleaning and scaling data for ML model...")
+    for team, stats in obp_slg_data.items():
+        if team in era_data:  # Use full-length team names directly
+            obp = stats.get('obp', None)
+            slg = stats.get('slg', None)
+            era = era_data[team].get('era', None)
 
-    # Convert merged data to a DataFrame
-    df = pd.DataFrame(merged_data)
+            if obp is not None and slg is not None and era is not None:
+                features.append([obp, slg, era])
+                teams_with_data.append(team)
 
-    # Drop rows with missing or invalid values
-    df.replace("N/A", pd.NA, inplace=True)
-    df.dropna(inplace=True)
+    if not features:
+        print("Debug: OBP/SLG Data:", obp_slg_data)
+        print("Debug: ERA Data:", era_data)
+        raise ValueError("No valid data found for prediction. Check input data.")
 
-    # Convert numerical columns to appropriate types
-    df["wins"] = df["wins"].astype(int)
-    df["losses"] = df["losses"].astype(int)
-    df["win_rate"] = df["win_rate"].astype(float)
-    df["obp"] = df["obp"].astype(float)
-    df["slg"] = df["slg"].astype(float)
-    df["era"] = df["era"].astype(float)
+    # Convert features to DataFrame with correct column names
+    features_df = pd.DataFrame(features, columns=['OBP', 'SLG', 'ERA'])
 
-    # Scale numerical features
-    scaler = MinMaxScaler()
-    scaled_features = scaler.fit_transform(df[["obp", "slg", "era"]])
-    df[["obp", "slg", "era"]] = scaled_features
-
-    # Save cleaned and scaled data to a new CSV file
-    output_file = "cleaned_scaled_data.csv"
-    df.to_csv(output_file, index=False)
-    print(f":) Cleaned and scaled data saved to {output_file}")
-
-    return df
-
-def build_and_evaluate_models(cleaned_data):
-    print(":) Building and evaluating Neural Network model...")
-
-    # Define features (X) and target (y)
-    X = cleaned_data[["obp", "slg", "era"]]
-    y = cleaned_data["win_rate"]
-
-    # Split data into training and testing sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-    # Neural Network Model
-    nn_model = MLPRegressor(random_state=42, max_iter=500)
-    nn_model.fit(X_train, y_train)
-    nn_y_pred = nn_model.predict(X_test)
-    nn_mse = mean_squared_error(y_test, nn_y_pred)
-    nn_r2 = r2_score(y_test, nn_y_pred)
-    evaluate_with_percentage_error(y_test, nn_y_pred, "Neural Network")
-
-    return nn_model
-
-def improve_models(cleaned_data):
-    print(":) Improving models with hyperparameter tuning and feature engineering...")
-
-    # Define features (X) and target (y)
-    X = cleaned_data[["obp", "slg", "era"]]
-    y = cleaned_data["win_rate"]
-
-    # Add polynomial features to capture non-linear relationships
-    poly = PolynomialFeatures(degree=2, include_bias=False)
-    X_poly = poly.fit_transform(X)
-
-    # Split data into training and testing sets
-    X_train, X_test, y_train, y_test = train_test_split(X_poly, y, test_size=0.2, random_state=42)
-
-    # Neural Network with hyperparameter tuning
-    nn_model = MLPRegressor(hidden_layer_sizes=(50, 50), learning_rate_init=0.01, max_iter=1000, random_state=42)
-    nn_model.fit(X_train, y_train)
-    nn_y_pred = nn_model.predict(X_test)
-    nn_mse = mean_squared_error(y_test, nn_y_pred)
-    nn_r2 = r2_score(y_test, nn_y_pred)
-    print(f":) Improved Neural Network Evaluation:\nMean Squared Error: {nn_mse}\nR-squared: {nn_r2}")
-
-    # Cross-validation for Neural Network
-    nn_cv_scores = cross_val_score(nn_model, X_poly, y, cv=5, scoring='r2')
-    print(f":) Neural Network Cross-Validation R-squared: {nn_cv_scores.mean()} (+/- {nn_cv_scores.std()})")
-
-    return nn_model
-
-def evaluate_with_percentage_error(y_test, y_pred, model_name):
-    mape = mean_absolute_percentage_error(y_test, y_pred)
-    print(f":) {model_name} Evaluation:\nMean Absolute Percentage Error (MAPE): {mape * 100:.2f}%")
-
-def display_dashboard(cleaned_data):
-    # Update the dashboard to include dropdowns for team comparison
-    st.title("MLB Team Dashboard")
-    st.header("Predict Game Winner")
-
-    # Define features (X) for prediction
-    X = cleaned_data[["obp", "slg", "era"]]
-
-    # Load the trained Neural Network model
-    nn_model = MLPRegressor(random_state=42, max_iter=500)
-    nn_model.fit(X, cleaned_data["win_rate"])
+    # Scale the features
+    features_scaled = scaler.transform(features_df)
 
     # Predict win rates
-    predicted_win_rates = nn_model.predict(X)
-    cleaned_data["predicted_win_rate"] = predicted_win_rates
+    predicted_win_rates = model.predict(features_scaled)
 
-    # Dropdowns for team selection
-    team_names = cleaned_data["name"].tolist()
-    team1 = st.selectbox("Select Home Team", team_names)
-    team2 = st.selectbox("Select Away Team", team_names)
+    # Map predictions back to team names
+    predictions = {}
+    for i, team in enumerate(teams_with_data):
+        predictions[team] = predicted_win_rates[i][0]
 
-    # Submit button to determine the winner
-    if st.button("Submit"):
-        team1_data = cleaned_data[cleaned_data["name"] == team1]
-        team2_data = cleaned_data[cleaned_data["name"] == team2]
+    return predictions
 
-        team1_win_rate = team1_data["predicted_win_rate"].values[0]
-        team2_win_rate = team2_data["predicted_win_rate"].values[0]
-
-        if team1_win_rate > team2_win_rate:
-            st.success(f"🎉 {team1} is predicted to win! With a predicted win rate of {team1_win_rate:.2f}! 🏆")
-            logo_path = f"logos/{team1.replace(' ', '_').lower()}.svg"
-        else:
-            st.success(f"🎉 {team2} is predicted to win! With a predicted win rate of {team2_win_rate:.2f}! 🏆")
-            logo_path = f"logos/{team2.replace(' ', '_').lower()}.svg"
-
-        # Display the winning team's logo
-        st.image(logo_path, use_container_width=True)  # Updated to use 'use_container_width' instead of 'use_column_width'
-
+# Normalize team names in the Streamlit app
 if __name__ == "__main__":
-    # Collect data from both sources
-    standings_data = scrape_mlb_standings()
-    batting_data = scrape_baseball_reference()
-    pitching_data = load_pitching_stats("Team Pitching Stats 2010-2025.csv")
-    team_data = load_team_stats("Team stats 2010-2025.csv")
+    st.title("MLB Team Dashboard")
+    st.subheader("Predict Game Winner")
 
-    # Merge the tables
-    merged_table = merge_tables(standings_data, batting_data, pitching_data, team_data)
+    st.write("""
+    This dashboard uses a machine learning model trained on historical MLB data (2010-2025) to predict game winners. 
+    The model leverages key statistics such as On-Base Percentage (OBP), Slugging Percentage (SLG), and Earned Run Average (ERA). 
+    Real-time batting data is fetched from Baseball Reference, and pitching data is sourced from the latest available stats to make game-winner predictions.
+    """)
 
-    # Clean and scale data for ML model
-    cleaned_data = clean_and_scale_data(merged_table)
+    # Load the pre-trained model with the correct loss function
+    model = tf.keras.models.load_model('win_rate_predictor_model.h5', custom_objects={'mse': tf.keras.losses.MeanSquaredError()})
 
-    # Build and evaluate Neural Network model
-    nn_model = build_and_evaluate_models(cleaned_data)
+    # Load the scaler used during training
+    scaler = joblib.load('scaler.pkl')
 
-    # Improve models with hyperparameter tuning and feature engineering
-    improved_nn_model = improve_models(cleaned_data)
+    # Scale the ERA data
+    scale_era_data("Team ERA 2025.csv")
+    scale_era_in_important_stats("Team Important Stats 2010-2025.csv")
 
-    # Display the dashboard using Streamlit
-    display_dashboard(cleaned_data)
+    # Fetch OBP and SLG from the API
+    obp_slg_data = scrape_baseball_reference()
+
+    # Load 2025 ERA data
+    era_data = load_pitching_stats("Team ERA 2025.csv")
+
+    # Print all predictions for debugging
+    print("Debug: All Predictions")
+    predictions = predict_win_rates(obp_slg_data, era_data)
+    for team, win_rate in predictions.items():
+        print(f"{team}: {win_rate:.2f}")
+
+    # Team selection dropdowns
+    teams = list(obp_slg_data.keys())
+    home_team = st.selectbox("Select Home Team", teams)
+    away_team = st.selectbox("Select Away Team", teams)
+
+    if st.button("Submit"):
+        # Get predictions for the selected teams
+        home_team_win_rate = round(predictions.get(home_team, 0) * 100)
+        away_team_win_rate = round(predictions.get(away_team, 0) * 100)
+
+        # Determine the predicted winner
+        if home_team_win_rate > away_team_win_rate:
+            st.success(f"🎉 {home_team} is predicted to win! With a predicted season win rate of {home_team_win_rate}% 🏆")
+        elif away_team_win_rate > home_team_win_rate:
+            st.success(f"🎉 {away_team} is predicted to win! With a predicted season win rate of {away_team_win_rate}% 🏆")
+        else:
+            st.info("It's a tie! Both teams have the same predicted win rate.")
+
+        # Display the winning team's logo only
+        if home_team_win_rate > away_team_win_rate:
+            winning_logo_path = f"logos/{home_team.lower().replace(' ', '_')}.svg"
+        else:
+            winning_logo_path = f"logos/{away_team.lower().replace(' ', '_')}.svg"
+
+        st.image(winning_logo_path, width=150)
